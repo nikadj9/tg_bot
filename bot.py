@@ -1,29 +1,18 @@
-import json
 import math
-import random
 import re
 import sqlite3
 from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from telegram import ReplyKeyboardMarkup, KeyboardButton, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 
-TOKEN = "8507728064:AAEk18wd1FXHQSOgfKExy6a6tgCFKDkbDBw"
+TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_TELEGRAM"
 
 EVENTS_PER_PAGE = 3
 DEFAULT_EVENT_DURATION_MINUTES = 60
 
-# =========================
-# DB
-# =========================
 conn = sqlite3.connect("database.db", check_same_thread=False)
 cursor = conn.cursor()
 
@@ -54,21 +43,13 @@ def ensure_columns():
 
 ensure_columns()
 
-# =========================
-# STATE / SCHEDULER
-# =========================
 user_state = {}
 scheduled_jobs = {}
-
 scheduler = BackgroundScheduler()
 scheduler.start()
-
 telegram_app = None
 
 
-# =========================
-# HELPERS
-# =========================
 def normalize_spaces(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
@@ -77,28 +58,8 @@ def format_dt(dt: datetime) -> str:
     return dt.strftime("%d.%m.%y %H:%M")
 
 
-async def send(user_id: int, text: str, keyboard=None):
-    global telegram_app
-
-    if keyboard is None:
-        keyboard = get_main_keyboard()
-
-    await telegram_app.bot.send_message(
-        chat_id=user_id,
-        text=text,
-        reply_markup=keyboard
-    )
-
-
-# =========================
-# KEYBOARDS
-# =========================
 def make_keyboard(rows):
-    return ReplyKeyboardMarkup(
-        rows,
-        resize_keyboard=True,
-        one_time_keyboard=False
-    )
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, one_time_keyboard=False)
 
 
 def get_main_keyboard():
@@ -106,193 +67,30 @@ def get_main_keyboard():
         [KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список")],
         [KeyboardButton("❌ Удалить"), KeyboardButton("🔔 Уведомления")],
         [KeyboardButton("✏️ Редактировать"), KeyboardButton("🔁 Повтор")],
-        [KeyboardButton("📊 Оценки")],
+        [KeyboardButton("📊 Оценки")]
     ])
 
 
 def get_back_keyboard():
-    return make_keyboard([
-        [KeyboardButton("⬅️ Назад")]
-    ])
+    return make_keyboard([[KeyboardButton("⬅️ Назад")]])
 
 
-def get_delete_keyboard(user_id: int, page: int = 0):
-    events = get_events(user_id)
-
-    if not events:
-        return get_back_keyboard()
-
-    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-
-    start_index = page * EVENTS_PER_PAGE
-    end_index = start_index + EVENTS_PER_PAGE
-    page_events = events[start_index:end_index]
-
-    rows = []
-
-    for event in page_events:
-        dt = datetime.fromisoformat(event["start"])
-        button_text = f"🗑 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')}"
-        rows.append([KeyboardButton(button_text)])
-
-    nav = []
-    if page > 0:
-        nav.append(KeyboardButton("⬅️ Страница удаления"))
-    if page < total_pages - 1:
-        nav.append(KeyboardButton("➡️ Страница удаления"))
-
-    if nav:
-        rows.append(nav)
-
-    rows.append([KeyboardButton("⬅️ Назад")])
-    return make_keyboard(rows)
+async def send(user_id: int, text: str, keyboard=None):
+    await telegram_app.bot.send_message(
+        chat_id=user_id,
+        text=text,
+        reply_markup=keyboard if keyboard else get_main_keyboard()
+    )
 
 
-def get_reminder_events_keyboard(user_id: int, page: int = 0):
-    events = get_events(user_id)
-
-    if not events:
-        return get_back_keyboard()
-
-    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-
-    start_index = page * EVENTS_PER_PAGE
-    end_index = start_index + EVENTS_PER_PAGE
-    page_events = events[start_index:end_index]
-
-    rows = []
-
-    for event in page_events:
-        dt = datetime.fromisoformat(event["start"])
-        remind_text = "выкл" if not event["remind"] else f"{event['remind']} мин"
-        button_text = f"🔔 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {remind_text}"
-        rows.append([KeyboardButton(button_text)])
-
-    nav = []
-    if page > 0:
-        nav.append(KeyboardButton("⬅️ Страница уведомлений"))
-    if page < total_pages - 1:
-        nav.append(KeyboardButton("➡️ Страница уведомлений"))
-
-    if nav:
-        rows.append(nav)
-
-    rows.append([KeyboardButton("⬅️ Назад")])
-    return make_keyboard(rows)
-
-
-def get_reminder_options_keyboard():
-    return make_keyboard([
-        [KeyboardButton("🔕 Выкл"), KeyboardButton("5 мин")],
-        [KeyboardButton("10 мин"), KeyboardButton("15 мин")],
-        [KeyboardButton("30 мин"), KeyboardButton("60 мин")],
-        [KeyboardButton("120 мин"), KeyboardButton("✍️ Свое значение")],
-        [KeyboardButton("⬅️ Назад")]
-    ])
-
-
-def get_event_picker_keyboard(user_id: int, page: int = 0, prefix: str = "✏️"):
-    events = get_events(user_id)
-
-    if not events:
-        return get_back_keyboard()
-
-    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-
-    start_index = page * EVENTS_PER_PAGE
-    end_index = start_index + EVENTS_PER_PAGE
-    page_events = events[start_index:end_index]
-
-    rows = []
-
-    for event in page_events:
-        dt = datetime.fromisoformat(event["start"])
-        button_text = f"{prefix} {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')}"
-        rows.append([KeyboardButton(button_text)])
-
-    nav = []
-    if page > 0:
-        nav.append(KeyboardButton(f"⬅️ Страница {prefix}"))
-    if page < total_pages - 1:
-        nav.append(KeyboardButton(f"➡️ Страница {prefix}"))
-
-    if nav:
-        rows.append(nav)
-
-    rows.append([KeyboardButton("⬅️ Назад")])
-    return make_keyboard(rows)
-
-
-def get_edit_options_keyboard():
-    return make_keyboard([
-        [KeyboardButton("✏️ Название"), KeyboardButton("📅 Дата")],
-        [KeyboardButton("⏰ Время")],
-        [KeyboardButton("⬅️ Назад")]
-    ])
-
-
-def get_repeat_events_keyboard(user_id: int, page: int = 0):
-    events = get_events(user_id)
-
-    if not events:
-        return get_back_keyboard()
-
-    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
-    page = max(0, min(page, total_pages - 1))
-
-    start_index = page * EVENTS_PER_PAGE
-    end_index = start_index + EVENTS_PER_PAGE
-    page_events = events[start_index:end_index]
-
-    repeat_map = {
-        "none": "выкл",
-        "daily": "каждый день",
-        "weekly": "каждую неделю"
-    }
-
-    rows = []
-
-    for event in page_events:
-        dt = datetime.fromisoformat(event["start"])
-        repeat_text = repeat_map.get(event["repeat_rule"], "выкл")
-        button_text = f"🔁 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {repeat_text}"
-        rows.append([KeyboardButton(button_text)])
-
-    nav = []
-    if page > 0:
-        nav.append(KeyboardButton("⬅️ Страница повтора"))
-    if page < total_pages - 1:
-        nav.append(KeyboardButton("➡️ Страница повтора"))
-
-    if nav:
-        rows.append(nav)
-
-    rows.append([KeyboardButton("⬅️ Назад")])
-    return make_keyboard(rows)
-
-
-def get_repeat_options_keyboard():
-    return make_keyboard([
-        [KeyboardButton("🔕 Повтор выкл"), KeyboardButton("🔁 Каждый день")],
-        [KeyboardButton("🔁 Каждую неделю")],
-        [KeyboardButton("⬅️ Назад")]
-    ])
-
-
-# =========================
-# FRIENDLY ERRORS
-# =========================
 def build_invalid_date_error():
     return (
         "Неверная дата.\n"
-        "Используй формат дд.мм, дд.мм.гггг или дд.мм.гг.\n\n"
+        "Используй формат дд.мм, дд.мм.гг или дд.мм.гггг.\n\n"
         "Примеры:\n"
-        "Тренировка 13:00 11.11.26\n"
-        "День рождения 13:00 11.11.2027\n"
-        "11.11 Репетитор 13:00"
+        "Тренировка 13:00 11.11\n"
+        "Репетитор 13:00 11.11.26\n"
+        "Поездка 13:00 11.11.2027"
     )
 
 
@@ -300,16 +98,11 @@ def build_invalid_time_error():
     return (
         "Неверное время.\n"
         "Используй формат чч:мм.\n\n"
-        "Примеры:\n"
-        "Физика 13:00 11.11.2026\n"
-        "11.11.26 13:00 Физика\n"
-        "11.11.2026 Физика 13:00"
+        "Пример:\n"
+        "Физика 13:00 11.11"
     )
 
 
-# =========================
-# CLEANUP / REPEAT
-# =========================
 def cleanup_past_non_repeating_events():
     now_iso = datetime.now().isoformat()
 
@@ -320,8 +113,7 @@ def cleanup_past_non_repeating_events():
     rows = cursor.fetchall()
 
     for row in rows:
-        event_id = row[0]
-        remove_scheduled_jobs_for_event(event_id)
+        remove_scheduled_jobs_for_event(row[0])
 
     cursor.execute(
         "DELETE FROM events WHERE repeat_rule='none' AND end < ?",
@@ -367,19 +159,9 @@ def advance_repeating_events():
                 schedule_event(event_id, user_id, name, start_dt, remind)
 
 
-# =========================
-# PARSER
-# =========================
 def extract_time(text: str):
     match = re.search(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?!\d)", text)
     if not match:
-        raise ValueError(build_invalid_time_error())
-
-    start_pos, end_pos = match.span()
-    left = text[start_pos - 1] if start_pos > 0 else " "
-    right = text[end_pos] if end_pos < len(text) else " "
-
-    if left.isdigit() or right.isdigit():
         raise ValueError(build_invalid_time_error())
 
     hour = int(match.group(1))
@@ -396,10 +178,7 @@ def extract_date(text: str):
         month = int(match_full.group(2))
         year_raw = match_full.group(3)
 
-        if len(year_raw) == 2:
-            year = 2000 + int(year_raw)
-        else:
-            year = int(year_raw)
+        year = 2000 + int(year_raw) if len(year_raw) == 2 else int(year_raw)
 
         if year < now.year:
             raise ValueError("Год должен быть текущим или будущим")
@@ -430,9 +209,6 @@ def extract_date(text: str):
 def parse_event_input(text: str):
     source_text = normalize_spaces(text)
 
-    if not source_text:
-        raise ValueError("Пустой ввод")
-
     hour, minute, found_time_text = extract_time(source_text)
     date_dt, found_date_text = extract_date(source_text)
 
@@ -459,22 +235,15 @@ def parse_date_only_input(text: str):
 
 
 def parse_time_only_input(text: str):
-    source_text = normalize_spaces(text)
-    hour, minute, _ = extract_time(source_text)
+    hour, minute, _ = extract_time(normalize_spaces(text))
     return hour, minute
 
 
-# =========================
-# GRADES
-# =========================
 def parse_grade_token(token: str):
     token = token.strip().lower().replace("х", "x")
-    if not token:
-        raise ValueError
-
     coefficient = 1
-    coef_match = re.fullmatch(r"(.+?)x([1-9]\d*)", token)
 
+    coef_match = re.fullmatch(r"(.+?)x([1-9]\d*)", token)
     if coef_match:
         base_part = coef_match.group(1)
         coefficient = int(coef_match.group(2))
@@ -485,17 +254,13 @@ def parse_grade_token(token: str):
         parts = base_part.split("/")
         if len(parts) != 2:
             raise ValueError
-
         a = int(parts[0])
         b = int(parts[1])
-
         if not (1 <= a <= 5 and 1 <= b <= 5):
             raise ValueError
-
         value = (a + b) / 2
     else:
         value = int(base_part)
-
         if not (1 <= value <= 5):
             raise ValueError
 
@@ -503,14 +268,8 @@ def parse_grade_token(token: str):
 
 
 def parse_grades_input(text: str):
-    tokens = text.split()
-
-    if not tokens:
-        raise ValueError
-
     values = []
-
-    for token in tokens:
+    for token in text.split():
         values.extend(parse_grade_token(token))
 
     if not values:
@@ -519,21 +278,18 @@ def parse_grades_input(text: str):
     return values
 
 
-# =========================
-# DB FUNCTIONS
-# =========================
 def get_events(user_id: int):
     cleanup_past_non_repeating_events()
     advance_repeating_events()
 
     cursor.execute(
-        "SELECT id, name, start, end, remind, repeat_rule FROM events WHERE user_id=? ORDER BY start",
+        "SELECT id, name, start, end, remind, repeat_rule "
+        "FROM events WHERE user_id=? ORDER BY start",
         (user_id,)
     )
     rows = cursor.fetchall()
 
     result = []
-
     for row in rows:
         result.append({
             "id": row[0],
@@ -548,11 +304,9 @@ def get_events(user_id: int):
 
 
 def get_event_by_id(user_id: int, event_id: int):
-    cleanup_past_non_repeating_events()
-    advance_repeating_events()
-
     cursor.execute(
-        "SELECT id, name, start, end, remind, repeat_rule FROM events WHERE user_id=? AND id=?",
+        "SELECT id, name, start, end, remind, repeat_rule "
+        "FROM events WHERE user_id=? AND id=?",
         (user_id, event_id)
     )
     row = cursor.fetchone()
@@ -576,16 +330,17 @@ def show_events_text(user_id: int) -> str:
     if not events:
         return "📭 У тебя нет событий"
 
-    lines = ["📅 Твои события:\n"]
-
     repeat_map = {
         "none": "",
         "daily": "🔁 каждый день",
         "weekly": "🔁 каждую неделю"
     }
 
+    lines = ["📅 Твои события:\n"]
+
     for i, event in enumerate(events, start=1):
         start_dt = datetime.fromisoformat(event["start"])
+
         line = f"{i}. {event['name']} — {format_dt(start_dt)}"
 
         if event["remind"]:
@@ -593,7 +348,7 @@ def show_events_text(user_id: int) -> str:
         else:
             line += " | 🔕"
 
-        repeat_text = repeat_map.get(event.get("repeat_rule", "none"), "")
+        repeat_text = repeat_map.get(event["repeat_rule"], "")
         if repeat_text:
             line += f" | {repeat_text}"
 
@@ -604,22 +359,21 @@ def show_events_text(user_id: int) -> str:
 
 def create_event(user_id: int, name: str, start_dt: datetime, end_dt: datetime):
     cursor.execute(
-        "INSERT INTO events (user_id, name, start, end, remind, repeat_rule) VALUES (?, ?, ?, ?, ?, ?)",
+        "INSERT INTO events (user_id, name, start, end, remind, repeat_rule) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
         (user_id, name, start_dt.isoformat(), end_dt.isoformat(), 0, "none")
     )
     conn.commit()
     return cursor.lastrowid
 
 
-def delete_event_by_id(user_id: int, event_id: int) -> bool:
-    cursor.execute(
-        "SELECT id FROM events WHERE id=? AND user_id=?",
-        (event_id, user_id)
-    )
-    row = cursor.fetchone()
+def delete_event_by_number(user_id: int, number: int) -> bool:
+    events = get_events(user_id)
 
-    if not row:
+    if number < 1 or number > len(events):
         return False
+
+    event_id = events[number - 1]["id"]
 
     remove_scheduled_jobs_for_event(event_id)
 
@@ -683,21 +437,11 @@ def set_event_repeat(user_id: int, event_id: int, repeat_rule: str) -> bool:
 
 def update_event_name(user_id: int, event_id: int, new_name: str) -> bool:
     cursor.execute(
-        "SELECT id FROM events WHERE id=? AND user_id=?",
-        (event_id, user_id)
-    )
-    row = cursor.fetchone()
-
-    if not row:
-        return False
-
-    cursor.execute(
         "UPDATE events SET name=? WHERE id=? AND user_id=?",
         (new_name, event_id, user_id)
     )
     conn.commit()
-
-    return True
+    return cursor.rowcount > 0
 
 
 def update_event_date(user_id: int, event_id: int, new_date: datetime) -> bool:
@@ -761,9 +505,172 @@ def update_event_time(user_id: int, event_id: int, hour: int, minute: int) -> bo
     return True
 
 
-# =========================
-# REMINDERS
-# =========================
+def get_delete_keyboard(user_id: int, page: int = 0):
+    events = get_events(user_id)
+
+    if not events:
+        return get_back_keyboard()
+
+    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    start_index = page * EVENTS_PER_PAGE
+    page_events = events[start_index:start_index + EVENTS_PER_PAGE]
+
+    rows = []
+
+    for index, event in enumerate(page_events, start=start_index + 1):
+        dt = datetime.fromisoformat(event["start"])
+        rows.append([
+            KeyboardButton(f"🗑 {index}. {event['name']} — {dt.strftime('%d.%m %H:%M')}")
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(KeyboardButton("⬅️ Страница удаления"))
+    if page < total_pages - 1:
+        nav.append(KeyboardButton("➡️ Страница удаления"))
+
+    if nav:
+        rows.append(nav)
+
+    rows.append([KeyboardButton("⬅️ Назад")])
+    return make_keyboard(rows)
+
+
+def get_event_picker_keyboard(user_id: int, page: int = 0, prefix: str = "✏️"):
+    events = get_events(user_id)
+
+    if not events:
+        return get_back_keyboard()
+
+    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    start_index = page * EVENTS_PER_PAGE
+    page_events = events[start_index:start_index + EVENTS_PER_PAGE]
+
+    rows = []
+
+    for event in page_events:
+        dt = datetime.fromisoformat(event["start"])
+        rows.append([
+            KeyboardButton(f"{prefix} {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')}")
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(KeyboardButton(f"⬅️ Страница {prefix}"))
+    if page < total_pages - 1:
+        nav.append(KeyboardButton(f"➡️ Страница {prefix}"))
+
+    if nav:
+        rows.append(nav)
+
+    rows.append([KeyboardButton("⬅️ Назад")])
+    return make_keyboard(rows)
+
+
+def get_reminder_events_keyboard(user_id: int, page: int = 0):
+    events = get_events(user_id)
+
+    if not events:
+        return get_back_keyboard()
+
+    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    start_index = page * EVENTS_PER_PAGE
+    page_events = events[start_index:start_index + EVENTS_PER_PAGE]
+
+    rows = []
+
+    for event in page_events:
+        dt = datetime.fromisoformat(event["start"])
+        remind_text = "выкл" if not event["remind"] else f"{event['remind']} мин"
+        rows.append([
+            KeyboardButton(f"🔔 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {remind_text}")
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(KeyboardButton("⬅️ Страница уведомлений"))
+    if page < total_pages - 1:
+        nav.append(KeyboardButton("➡️ Страница уведомлений"))
+
+    if nav:
+        rows.append(nav)
+
+    rows.append([KeyboardButton("⬅️ Назад")])
+    return make_keyboard(rows)
+
+
+def get_reminder_options_keyboard():
+    return make_keyboard([
+        [KeyboardButton("🔕 Выкл"), KeyboardButton("5 мин")],
+        [KeyboardButton("10 мин"), KeyboardButton("15 мин")],
+        [KeyboardButton("30 мин"), KeyboardButton("60 мин")],
+        [KeyboardButton("120 мин"), KeyboardButton("✍️ Свое значение")],
+        [KeyboardButton("⬅️ Назад")]
+    ])
+
+
+def get_edit_options_keyboard():
+    return make_keyboard([
+        [KeyboardButton("✏️ Название"), KeyboardButton("📅 Дата")],
+        [KeyboardButton("⏰ Время")],
+        [KeyboardButton("⬅️ Назад")]
+    ])
+
+
+def get_repeat_events_keyboard(user_id: int, page: int = 0):
+    events = get_events(user_id)
+
+    if not events:
+        return get_back_keyboard()
+
+    total_pages = math.ceil(len(events) / EVENTS_PER_PAGE)
+    page = max(0, min(page, total_pages - 1))
+
+    start_index = page * EVENTS_PER_PAGE
+    page_events = events[start_index:start_index + EVENTS_PER_PAGE]
+
+    repeat_map = {
+        "none": "выкл",
+        "daily": "каждый день",
+        "weekly": "каждую неделю"
+    }
+
+    rows = []
+
+    for event in page_events:
+        dt = datetime.fromisoformat(event["start"])
+        repeat_text = repeat_map.get(event["repeat_rule"], "выкл")
+        rows.append([
+            KeyboardButton(f"🔁 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {repeat_text}")
+        ])
+
+    nav = []
+    if page > 0:
+        nav.append(KeyboardButton("⬅️ Страница повтора"))
+    if page < total_pages - 1:
+        nav.append(KeyboardButton("➡️ Страница повтора"))
+
+    if nav:
+        rows.append(nav)
+
+    rows.append([KeyboardButton("⬅️ Назад")])
+    return make_keyboard(rows)
+
+
+def get_repeat_options_keyboard():
+    return make_keyboard([
+        [KeyboardButton("🔕 Повтор выкл"), KeyboardButton("🔁 Каждый день")],
+        [KeyboardButton("🔁 Каждую неделю")],
+        [KeyboardButton("⬅️ Назад")]
+    ])
+
+
 def remove_scheduled_jobs_for_event(event_id: int):
     job_ids = scheduled_jobs.get(event_id, [])
 
@@ -836,9 +743,6 @@ def restore_jobs_from_db():
             schedule_event(event_id, user_id, name, start_dt, remind)
 
 
-# =========================
-# TEXT HELPERS
-# =========================
 def extract_id_from_button(text: str):
     match = re.search(r"(\d+)\s*\|", text)
     if not match:
@@ -846,9 +750,13 @@ def extract_id_from_button(text: str):
     return int(match.group(1))
 
 
-# =========================
-# HANDLERS
-# =========================
+def extract_delete_number(text: str):
+    match = re.search(r"🗑\s*(\d+)\.", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_state.pop(user_id, None)
@@ -864,15 +772,9 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 🔁 Повторять события каждый день или неделю\n"
         "• ✏️ Редактировать события\n"
         "• 📊 Считать средний балл\n\n"
-        "📌 Как добавить событие:\n"
-        "Напиши одной строкой, например:\n"
+        "📌 Пример добавления:\n"
         "Тренировка 13:00 11.11\n"
-        "Репетитор 18:00 12.12.2026\n\n"
-        "📅 Форматы:\n"
-        "• Дата: дд.мм, дд.мм.гггг или дд.мм.гг\n"
-        "• Время: 13:00\n\n"
-        "💡 Если не указать год — возьмётся текущий\n\n"
-        "Понадобится помощь — пиши Помощь или /help\n\n"
+        "Репетитор 18:00 12.12.26\n\n"
         "👇 Выбери действие:",
         keyboard=get_main_keyboard()
     )
@@ -886,17 +788,13 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📖 Инструкция:\n\n"
         "➕ Добавление:\n"
         "Тренировка 13:00 11.11\n"
-        "11.11.26 13:00 Репетитор\n"
-        "Программирование 18:00 12.12.2026\n\n"
-        "📋 Посмотреть список — кнопка «Список»\n"
-        "❌ Удалить событие — кнопка «Удалить»\n"
-        "🔔 Установить напоминания — кнопка «Уведомления»\n"
-        "🔁 Настроить повтор — кнопка «Повтор»\n\n"
+        "11.11.26 13:00 Репетитор\n\n"
         "📊 Оценки:\n"
-        "Пример: 5 4 3 5\n"
-        "С коэффициентами: 5x3 4x2\n"
-        "В одной клетке: 3/4 4/5x3\n\n"
-        "⬅️ Назад — всегда возвращает в меню",
+        "5 4 3\n"
+        "5x3 4\n"
+        "3/4 5\n"
+        "4/5x3\n\n"
+        "⬅️ Назад — возврат в меню",
         keyboard=get_main_keyboard()
     )
 
@@ -910,37 +808,30 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = user_state.get(user_id)
 
-    # ========= BACK =========
     if text == "⬅️ Назад":
         user_state.pop(user_id, None)
         await send(user_id, "Главное меню", keyboard=get_main_keyboard())
         return
 
-    # ========= HELP =========
     if text.lower() in {"помощь", "help", "/help"}:
         await help_handler(update, context)
         return
 
-    # ========= LIST =========
     if text == "📋 Список":
         user_state.pop(user_id, None)
         await send(user_id, show_events_text(user_id), keyboard=get_main_keyboard())
         return
 
-    # ========= GRADES =========
     if text == "📊 Оценки":
         user_state[user_id] = {"action": "grades"}
-
         await send(
             user_id,
             "Введи оценки через пробел.\n\n"
             "Примеры:\n"
             "5 4 3\n"
-            "5x3 4 3\n"
-            "5х3 4 3\n"
+            "5x3 4\n"
             "3/4 5\n"
-            "3/4x3 5\n"
-            "4/5х3 3",
+            "4/5x3",
             keyboard=get_back_keyboard()
         )
         return
@@ -949,33 +840,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             values = parse_grades_input(text)
             avg = sum(values) / len(values)
-
             user_state.pop(user_id, None)
             await send(user_id, f"📊 Средний балл: {avg:.2f}", keyboard=get_main_keyboard())
-
         except Exception:
-            await send(
-                user_id,
-                "❌ Неправильный ввод.\n\n"
-                "Примеры:\n"
-                "5 4 3\n"
-                "5x3 4 3\n"
-                "5х3 4 3\n"
-                "3/4 5\n"
-                "3/4x3 5\n"
-                "4/5х3 3",
-                keyboard=get_back_keyboard()
-            )
+            await send(user_id, "❌ Неправильный ввод.", keyboard=get_back_keyboard())
         return
 
-    # ========= ADD =========
     if text == "➕ Добавить":
         user_state[user_id] = {"action": "add"}
-
         await send(
             user_id,
             "Введи событие одной строкой.\n\n"
-            "Формат даты: дд.мм, дд.мм.гггг или дд.мм.гг\n\n"
             "Примеры:\n"
             "Поездка 13:00 11.11.2027\n"
             "11.11 Тренировка 13:00\n"
@@ -987,137 +862,77 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state and state.get("action") == "add":
         try:
             name, start_dt, end_dt = parse_event_input(text)
-            create_event(user_id=user_id, name=name, start_dt=start_dt, end_dt=end_dt)
-
+            create_event(user_id, name, start_dt, end_dt)
             user_state.pop(user_id, None)
-
-            await send(
-                user_id,
-                "✅ Событие добавлено!\n\n" + show_events_text(user_id),
-                keyboard=get_main_keyboard()
-            )
-
+            await send(user_id, "✅ Событие добавлено!\n\n" + show_events_text(user_id), keyboard=get_main_keyboard())
         except Exception as e:
-            await send(
-                user_id,
-                f"❌ {str(e)}\n\n"
-                "Попробуй ещё раз.\n"
-                "Примеры:\n"
-                "Репетитор 13:00 11.11\n"
-                "11.11.2026 Тренировка 13:00\n"
-                "Встреча 11.11.27 13:00",
-                keyboard=get_back_keyboard()
-            )
+            await send(user_id, f"❌ {str(e)}", keyboard=get_back_keyboard())
         return
 
-    # ========= DELETE =========
     if text == "❌ Удалить":
         user_state[user_id] = {"action": "delete_menu", "page": 0}
-
-        if not get_events(user_id):
-            await send(user_id, "📭 У тебя нет событий", keyboard=get_back_keyboard())
-        else:
-            await send(
-                user_id,
-                "Выбери событие для удаления:",
-                keyboard=get_delete_keyboard(user_id, page=0)
-            )
-        return
-
-    if text in {"⬅️ Страница удаления", "➡️ Страница удаления"}:
-        state = user_state.get(user_id, {"page": 0})
-        page = state.get("page", 0)
-
-        if text.startswith("⬅️"):
-            page -= 1
-        else:
-            page += 1
-
-        user_state[user_id] = {"action": "delete_menu", "page": page}
-
         await send(
             user_id,
-            f"Выбери событие для удаления:\nСтраница {page + 1}",
-            keyboard=get_delete_keyboard(user_id, page=page)
+            "Выбери событие для удаления:" if get_events(user_id) else "📭 У тебя нет событий",
+            keyboard=get_delete_keyboard(user_id, page=0)
         )
         return
 
-    if text.startswith("🗑 "):
-        event_id = extract_id_from_button(text)
+    if text in {"⬅️ Страница удаления", "➡️ Страница удаления"}:
+        page = user_state.get(user_id, {}).get("page", 0)
+        page = page - 1 if text.startswith("⬅️") else page + 1
+        user_state[user_id] = {"action": "delete_menu", "page": page}
+        await send(user_id, f"Выбери событие для удаления:\nСтраница {page + 1}", keyboard=get_delete_keyboard(user_id, page))
+        return
 
-        if event_id is None:
+    if text.startswith("🗑 "):
+        number = extract_delete_number(text)
+
+        if number is None:
             await send(user_id, "❌ Не удалось определить событие.", keyboard=get_main_keyboard())
             return
 
-        deleted = delete_event_by_id(user_id, event_id)
+        deleted = delete_event_by_number(user_id, number)
         user_state.pop(user_id, None)
 
         if deleted:
-            send(
-                user_id,
-                "🗑 Событие удалено.\n\n" + show_events_text(user_id),
-                keyboard=get_main_keyboard()
-            )
+            await send(user_id, "🗑 Событие удалено.\n\n" + show_events_text(user_id), keyboard=get_main_keyboard())
         else:
             await send(user_id, "❌ Не удалось удалить событие.", keyboard=get_main_keyboard())
         return
 
-    # ========= REMINDERS =========
     if text == "🔔 Уведомления":
         user_state[user_id] = {"action": "remind_menu", "page": 0}
-
-        if not get_events(user_id):
-            await send(user_id, "📭 У тебя нет событий", keyboard=get_back_keyboard())
-        else:
-            await send(
-                user_id,
-                "Выбери событие для настройки уведомления:",
-                keyboard=get_reminder_events_keyboard(user_id, page=0)
-            )
+        await send(
+            user_id,
+            "Выбери событие для настройки уведомления:" if get_events(user_id) else "📭 У тебя нет событий",
+            keyboard=get_reminder_events_keyboard(user_id, 0)
+        )
         return
 
     if text in {"⬅️ Страница уведомлений", "➡️ Страница уведомлений"}:
-        state = user_state.get(user_id, {"page": 0})
-        page = state.get("page", 0)
-
-        if text.startswith("⬅️"):
-            page -= 1
-        else:
-            page += 1
-
+        page = user_state.get(user_id, {}).get("page", 0)
+        page = page - 1 if text.startswith("⬅️") else page + 1
         user_state[user_id] = {"action": "remind_menu", "page": page}
-
-        await send(
-            user_id,
-            f"Выбери событие для настройки уведомления:\nСтраница {page + 1}",
-            keyboard=get_reminder_events_keyboard(user_id, page=page)
-        )
+        await send(user_id, f"Выбери событие:\nСтраница {page + 1}", keyboard=get_reminder_events_keyboard(user_id, page))
         return
 
     if text.startswith("🔔 "):
         event_id = extract_id_from_button(text)
-
-        if event_id is None:
-            await send(user_id, "❌ Не удалось определить событие.", keyboard=get_main_keyboard())
-            return
-
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
             await send(user_id, "❌ Событие не найдено.", keyboard=get_main_keyboard())
             return
 
-        start_dt = datetime.fromisoformat(event_data["start"])
-        current = "выключено" if not event_data["remind"] else f"{event_data['remind']} мин"
-
         user_state[user_id] = {"action": "remind_options", "event_id": event_id}
+        current = "выключено" if not event_data["remind"] else f"{event_data['remind']} мин"
 
         await send(
             user_id,
             f"Событие: {event_data['name']}\n"
-            f"Дата: {format_dt(start_dt)}\n"
             f"Сейчас уведомление: {current}\n\n"
-            f"Выбери, за сколько минут напоминать:",
+            "Выбери, за сколько минут напоминать:",
             keyboard=get_reminder_options_keyboard()
         )
         return
@@ -1137,91 +952,55 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "✍️ Свое значение":
             user_state[user_id] = {"action": "remind_custom", "event_id": event_id}
-            await send(
-                user_id,
-                "Введи количество минут целым неотрицательным числом.\nНапример: 25",
-                keyboard=get_back_keyboard()
-            )
+            await send(user_id, "Введи количество минут числом:", keyboard=get_back_keyboard())
             return
 
         if text in reminder_map:
             minutes = reminder_map[text]
             ok = set_event_reminder(user_id, event_id, minutes)
             user_state.pop(user_id, None)
-
-            if ok:
-                if minutes == 0:
-                    await send(user_id, "🔕 Уведомление выключено.", keyboard=get_main_keyboard())
-                else:
-                    await send(user_id, f"🔔 Уведомление установлено за {minutes} мин.", keyboard=get_main_keyboard())
-            else:
-                await send(user_id, "❌ Не удалось изменить уведомление.", keyboard=get_main_keyboard())
+            await send(
+                user_id,
+                "🔕 Уведомление выключено." if minutes == 0 else f"🔔 Уведомление установлено за {minutes} мин.",
+                keyboard=get_main_keyboard()
+            )
             return
 
     if state and state.get("action") == "remind_custom":
-        token = text.strip()
-
-        if not re.fullmatch(r"\d+", token):
-            await send(
-                user_id,
-                "❌ Неправильный ввод.\nВведи целое неотрицательное число.\nНапример: 25",
-                keyboard=get_back_keyboard()
-            )
+        if not re.fullmatch(r"\d+", text):
+            await send(user_id, "❌ Неправильный ввод.", keyboard=get_back_keyboard())
             return
 
-        minutes = int(token)
+        minutes = int(text)
         event_id = state["event_id"]
-        ok = set_event_reminder(user_id, event_id, minutes)
+        set_event_reminder(user_id, event_id, minutes)
         user_state.pop(user_id, None)
-
-        if not ok:
-            await send(user_id, "❌ Не удалось изменить уведомление.", keyboard=get_main_keyboard())
-        else:
-            if minutes == 0:
-                await send(user_id, "🔕 Уведомление выключено.", keyboard=get_main_keyboard())
-            else:
-                await send(user_id, f"🔔 Уведомление установлено за {minutes} мин.", keyboard=get_main_keyboard())
-        return
-
-    # ========= EDIT =========
-    if text == "✏️ Редактировать":
-        user_state[user_id] = {"action": "edit_menu", "page": 0}
-
-        if not get_events(user_id):
-            await send(user_id, "📭 У тебя нет событий", keyboard=get_back_keyboard())
-        else:
-            await send(
-                user_id,
-                "Выбери событие для редактирования:",
-                keyboard=get_event_picker_keyboard(user_id, page=0, prefix="✏️")
-            )
-        return
-
-    if text in {"⬅️ Страница ✏️", "➡️ Страница ✏️"}:
-        state = user_state.get(user_id, {"page": 0})
-        page = state.get("page", 0)
-
-        if text.startswith("⬅️"):
-            page -= 1
-        else:
-            page += 1
-
-        user_state[user_id] = {"action": "edit_menu", "page": page}
 
         await send(
             user_id,
-            f"Выбери событие для редактирования:\nСтраница {page + 1}",
-            keyboard=get_event_picker_keyboard(user_id, page=page, prefix="✏️")
+            "🔕 Уведомление выключено." if minutes == 0 else f"🔔 Уведомление установлено за {minutes} мин.",
+            keyboard=get_main_keyboard()
         )
+        return
+
+    if text == "✏️ Редактировать":
+        user_state[user_id] = {"action": "edit_menu", "page": 0}
+        await send(
+            user_id,
+            "Выбери событие для редактирования:" if get_events(user_id) else "📭 У тебя нет событий",
+            keyboard=get_event_picker_keyboard(user_id, 0, "✏️")
+        )
+        return
+
+    if text in {"⬅️ Страница ✏️", "➡️ Страница ✏️"}:
+        page = user_state.get(user_id, {}).get("page", 0)
+        page = page - 1 if text.startswith("⬅️") else page + 1
+        user_state[user_id] = {"action": "edit_menu", "page": page}
+        await send(user_id, f"Выбери событие:\nСтраница {page + 1}", keyboard=get_event_picker_keyboard(user_id, page, "✏️"))
         return
 
     if text.startswith("✏️ ") and "|" in text:
         event_id = extract_id_from_button(text)
-
-        if event_id is None:
-            await send(user_id, "❌ Не удалось определить событие.", keyboard=get_main_keyboard())
-            return
-
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
@@ -1229,14 +1008,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         user_state[user_id] = {"action": "edit_options", "event_id": event_id}
-
-        await send(
-            user_id,
-            f"Событие: {event_data['name']}\n"
-            f"Дата: {format_dt(datetime.fromisoformat(event_data['start']))}\n\n"
-            "Что изменить?",
-            keyboard=get_edit_options_keyboard()
-        )
+        await send(user_id, "Что изменить?", keyboard=get_edit_options_keyboard())
         return
 
     if state and state.get("action") == "edit_options":
@@ -1249,147 +1021,68 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text == "📅 Дата":
             user_state[user_id] = {"action": "edit_wait_date", "event_id": event_id}
-            await send(
-                user_id,
-                "Введи новую дату в формате дд.мм, дд.мм.гг или дд.мм.гггг\n"
-                "Примеры:\n"
-                "11.11\n"
-                "11.11.26\n"
-                "11.11.2026",
-                keyboard=get_back_keyboard()
-            )
+            await send(user_id, "Введи новую дату:", keyboard=get_back_keyboard())
             return
 
         if text == "⏰ Время":
             user_state[user_id] = {"action": "edit_wait_time", "event_id": event_id}
-            await send(
-                user_id,
-                "Введи новое время.\nПример:\n18:00",
-                keyboard=get_back_keyboard()
-            )
+            await send(user_id, "Введи новое время:", keyboard=get_back_keyboard())
             return
 
     if state and state.get("action") == "edit_wait_name":
-        event_id = state["event_id"]
-        new_name = normalize_spaces(text)
-
-        if not new_name:
-            await send(user_id, "❌ Название не может быть пустым.", keyboard=get_back_keyboard())
-            return
-
-        ok = update_event_name(user_id, event_id, new_name)
+        update_event_name(user_id, state["event_id"], normalize_spaces(text))
         user_state.pop(user_id, None)
-
-        if ok:
-            await send(user_id, "✅ Название обновлено.", keyboard=get_main_keyboard())
-        else:
-            await send(user_id, "❌ Не удалось обновить событие.", keyboard=get_main_keyboard())
+        await send(user_id, "✅ Название обновлено.", keyboard=get_main_keyboard())
         return
 
     if state and state.get("action") == "edit_wait_date":
-        event_id = state["event_id"]
-
         try:
-            new_date = parse_date_only_input(text)
-            ok = update_event_date(user_id, event_id, new_date)
+            update_event_date(user_id, state["event_id"], parse_date_only_input(text))
             user_state.pop(user_id, None)
-
-            if ok:
-                await send(user_id, "✅ Дата обновлена.", keyboard=get_main_keyboard())
-            else:
-                await send(user_id, "❌ Не удалось обновить событие.", keyboard=get_main_keyboard())
-
+            await send(user_id, "✅ Дата обновлена.", keyboard=get_main_keyboard())
         except Exception as e:
             await send(user_id, f"❌ {str(e)}", keyboard=get_back_keyboard())
         return
 
     if state and state.get("action") == "edit_wait_time":
-        event_id = state["event_id"]
-
         try:
             hour, minute = parse_time_only_input(text)
-            ok = update_event_time(user_id, event_id, hour, minute)
+            update_event_time(user_id, state["event_id"], hour, minute)
             user_state.pop(user_id, None)
-
-            if ok:
-                await send(user_id, "✅ Время обновлено.", keyboard=get_main_keyboard())
-            else:
-                await send(user_id, "❌ Не удалось обновить событие.", keyboard=get_main_keyboard())
-
+            await send(user_id, "✅ Время обновлено.", keyboard=get_main_keyboard())
         except Exception as e:
             await send(user_id, f"❌ {str(e)}", keyboard=get_back_keyboard())
         return
 
-    # ========= REPEAT =========
     if text == "🔁 Повтор":
         user_state[user_id] = {"action": "repeat_menu", "page": 0}
-
-        if not get_events(user_id):
-            await send(user_id, "📭 У тебя нет событий", keyboard=get_back_keyboard())
-        else:
-            await send(
-                user_id,
-                "Выбери событие для настройки повтора:",
-                keyboard=get_repeat_events_keyboard(user_id, page=0)
-            )
+        await send(
+            user_id,
+            "Выбери событие для настройки повтора:" if get_events(user_id) else "📭 У тебя нет событий",
+            keyboard=get_repeat_events_keyboard(user_id, 0)
+        )
         return
 
     if text in {"⬅️ Страница повтора", "➡️ Страница повтора"}:
-        state = user_state.get(user_id, {"page": 0})
-        page = state.get("page", 0)
-
-        if text.startswith("⬅️"):
-            page -= 1
-        else:
-            page += 1
-
+        page = user_state.get(user_id, {}).get("page", 0)
+        page = page - 1 if text.startswith("⬅️") else page + 1
         user_state[user_id] = {"action": "repeat_menu", "page": page}
-
-        await send(
-            user_id,
-            f"Выбери событие для настройки повтора:\nСтраница {page + 1}",
-            keyboard=get_repeat_events_keyboard(user_id, page=page)
-        )
+        await send(user_id, f"Выбери событие:\nСтраница {page + 1}", keyboard=get_repeat_events_keyboard(user_id, page))
         return
 
     if text.startswith("🔁 ") and "|" in text:
         event_id = extract_id_from_button(text)
-
-        if event_id is None:
-            await send(user_id, "❌ Не удалось определить событие.", keyboard=get_main_keyboard())
-            return
-
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
             await send(user_id, "❌ Событие не найдено.", keyboard=get_main_keyboard())
             return
 
-        start_dt = datetime.fromisoformat(event_data["start"])
-
-        repeat_map = {
-            "none": "выключен",
-            "daily": "каждый день",
-            "weekly": "каждую неделю"
-        }
-
-        current_repeat = repeat_map.get(event_data["repeat_rule"], "выключен")
-
         user_state[user_id] = {"action": "repeat_options", "event_id": event_id}
-
-        await send(
-            user_id,
-            f"Событие: {event_data['name']}\n"
-            f"Дата: {format_dt(start_dt)}\n"
-            f"Сейчас повтор: {current_repeat}\n\n"
-            "Выбери вариант:",
-            keyboard=get_repeat_options_keyboard()
-        )
+        await send(user_id, "Выбери вариант повтора:", keyboard=get_repeat_options_keyboard())
         return
 
     if state and state.get("action") == "repeat_options":
-        event_id = state["event_id"]
-
         repeat_map = {
             "🔕 Повтор выкл": "none",
             "🔁 Каждый день": "daily",
@@ -1398,28 +1091,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if text in repeat_map:
             rule = repeat_map[text]
-            ok = set_event_repeat(user_id, event_id, rule)
+            set_event_repeat(user_id, state["event_id"], rule)
             user_state.pop(user_id, None)
 
-            if ok:
-                text_map = {
-                    "none": "🔕 Повтор выключен.",
-                    "daily": "🔁 Повтор установлен: каждый день.",
-                    "weekly": "🔁 Повтор установлен: каждую неделю."
-                }
+            msg = {
+                "none": "🔕 Повтор выключен.",
+                "daily": "🔁 Повтор установлен: каждый день.",
+                "weekly": "🔁 Повтор установлен: каждую неделю."
+            }[rule]
 
-                await send(user_id, text_map.get(rule, "✅ Повтор обновлён."), keyboard=get_main_keyboard())
-            else:
-                await send(user_id, "❌ Не удалось изменить повтор.", keyboard=get_main_keyboard())
+            await send(user_id, msg, keyboard=get_main_keyboard())
             return
 
-    # ========= DEFAULT =========
     await send(user_id, "Выбери действие в меню:", keyboard=get_main_keyboard())
 
 
-# =========================
-# START APP
-# =========================
 def main():
     global telegram_app
 
@@ -1436,7 +1122,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
     print("Telegram бот запущен...")
-
     app.run_polling()
 
 
