@@ -386,6 +386,14 @@ def delete_event_by_number(user_id: int, number: int) -> bool:
     return True
 
 
+def get_event_id_by_number(user_id: int, number: int):
+    events = get_events(user_id)
+
+    if number < 1 or number > len(events):
+        return None
+
+    return events[number - 1]["id"]
+
 def set_event_reminder(user_id: int, event_id: int, minutes: int) -> bool:
     cursor.execute(
         "SELECT id, name, start FROM events WHERE id=? AND user_id=?",
@@ -552,10 +560,13 @@ def get_event_picker_keyboard(user_id: int, page: int = 0, prefix: str = "✏️
 
     rows = []
 
-    for event in page_events:
+    for index, event in enumerate(page_events, start=start_index + 1):
         dt = datetime.fromisoformat(event["start"])
+
         rows.append([
-            KeyboardButton(f"{prefix} {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')}")
+            KeyboardButton(
+                f"{prefix} {index}. {event['name']} — {dt.strftime('%d.%m %H:%M')}"
+            )
         ])
 
     nav = []
@@ -585,11 +596,14 @@ def get_reminder_events_keyboard(user_id: int, page: int = 0):
 
     rows = []
 
-    for event in page_events:
+    for index, event in enumerate(page_events, start=start_index + 1):
         dt = datetime.fromisoformat(event["start"])
         remind_text = "выкл" if not event["remind"] else f"{event['remind']} мин"
+
         rows.append([
-            KeyboardButton(f"🔔 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {remind_text}")
+            KeyboardButton(
+                f"🔔 {index}. {event['name']} — {dt.strftime('%d.%m %H:%M')} | {remind_text}"
+            )
         ])
 
     nav = []
@@ -643,11 +657,14 @@ def get_repeat_events_keyboard(user_id: int, page: int = 0):
 
     rows = []
 
-    for event in page_events:
+    for index, event in enumerate(page_events, start=start_index + 1):
         dt = datetime.fromisoformat(event["start"])
         repeat_text = repeat_map.get(event["repeat_rule"], "выкл")
+
         rows.append([
-            KeyboardButton(f"🔁 {event['id']} | {event['name']} — {dt.strftime('%d.%m %H:%M')} | {repeat_text}")
+            KeyboardButton(
+                f"🔁 {index}. {event['name']} — {dt.strftime('%d.%m %H:%M')} | {repeat_text}"
+            )
         ])
 
     nav = []
@@ -752,6 +769,13 @@ def extract_id_from_button(text: str):
 
 def extract_delete_number(text: str):
     match = re.search(r"🗑\s*(\d+)\.", text)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def extract_event_number(text: str):
+    match = re.search(r"[🔔✏️🔁]\s*(\d+)\.", text)
     if not match:
         return None
     return int(match.group(1))
@@ -918,7 +942,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if text.startswith("🔔 "):
-        event_id = extract_id_from_button(text)
+        number = extract_event_number(text)
+        event_id = get_event_id_by_number(user_id, number) if number is not None else None
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
@@ -999,8 +1024,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send(user_id, f"Выбери событие:\nСтраница {page + 1}", keyboard=get_event_picker_keyboard(user_id, page, "✏️"))
         return
 
-    if text.startswith("✏️ ") and "|" in text:
-        event_id = extract_id_from_button(text)
+    if text.startswith("✏️ "):
+        number = extract_event_number(text)
+        event_id = get_event_id_by_number(user_id, number) if number is not None else None
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
@@ -1070,8 +1096,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send(user_id, f"Выбери событие:\nСтраница {page + 1}", keyboard=get_repeat_events_keyboard(user_id, page))
         return
 
-    if text.startswith("🔁 ") and "|" in text:
-        event_id = extract_id_from_button(text)
+    if text.startswith("🔁 "):
+        number = extract_event_number(text)
+        event_id = get_event_id_by_number(user_id, number) if number is not None else None
         event_data = get_event_by_id(user_id, event_id)
 
         if not event_data:
