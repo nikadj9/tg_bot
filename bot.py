@@ -1053,7 +1053,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_state.pop(user_id, None)
 
         if deleted:
-            await send(user_id, "🗑 Событие удалено.", keyboard=get_main_keyboard())
+            send(
+                user_id,
+                "🗑 Событие удалено.\n\n" + show_events_text(user_id),
+                keyboard=get_main_keyboard()
+            )
         else:
             await send(user_id, "❌ Не удалось удалить событие.", keyboard=get_main_keyboard())
         return
