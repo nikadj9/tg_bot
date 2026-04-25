@@ -8,7 +8,7 @@ from telegram import ReplyKeyboardMarkup, KeyboardButton, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 
-TOKEN = "ВСТАВЬ_СЮДА_ТОКЕН_TELEGRAM"
+TOKEN = "8507728064:AAEk18wd1FXHQSOgfKExy6a6tgCFKDkbDBw"
 
 EVENTS_PER_PAGE = 3
 DEFAULT_EVENT_DURATION_MINUTES = 60
